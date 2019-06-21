@@ -14,10 +14,10 @@ var orderCount = 0
 
 func main() {
 	start := time.Now()
-
+	//get a count of the orders to process in the orders file
 	orderCount, err := lineCounter()
 	if err != nil {
-		fmt.Println("Error counting inout record", err)
+		fmt.Println("Error counting input records", err)
 		return
 	} else {
 		fmt.Println("order records count is", orderCount)
@@ -28,22 +28,21 @@ func main() {
 	chTransform := make(chan *Order, orderCount)
 	chJobCompleted := make(chan bool)
 
-	//the channels are used to keep a track of the number of items processed in each goroutine
+	//the channels below are used to keep a track of the number of items processed in each goroutine
 	//they are used so we can identify when we can safely close the transform channel
 	//and safely send the jobCompleted message to the Job Completed channel
 	chTransformsCount := make(chan *Order, orderCount)
 	chLoadCount := make(chan *Order, orderCount)
 
-	//perform the ETL opeations - each
+	//perform the ETL opeations - each in their own goroutine
 	go extract(chExtract)
 	go transform(chExtract, chTransform, chTransformsCount)
 	go load(chTransform, chJobCompleted, chLoadCount)
 
-	//wait to receive on job completed channel
+	//wait to receive on job completed channel before termintating
 	<-chJobCompleted
-
+	//output time taken for job
 	fmt.Println(time.Since(start))
-
 }
 
 func lineCounter() (int, error) {
@@ -114,12 +113,14 @@ func transform(chExtract chan *Order, chTransform chan *Order, chTransformsCount
 			order.UnitPrice = product.UnitPrice
 			//place the transformed order on the transformed order channel for pick up by the loader function
 			chTransform <- order
+			//place the order on the transforms count channel
 			chTransformsCount <- order
 
 		}(order)
 
 	}
 
+	//check the transforms count channel and close the transforms channel once we have processesed all orders
 	for {
 		var processed int = len(chTransformsCount)
 		if processed == orderCount {
@@ -127,6 +128,7 @@ func transform(chExtract chan *Order, chTransform chan *Order, chTransformsCount
 			close(chTransform)
 			break
 		} else {
+			//not processed yet, sleep for a millisecond and check again
 			time.Sleep(1 * time.Millisecond)
 		}
 	}
@@ -146,11 +148,12 @@ func load(chTransform chan *Order, chJobCompleted chan bool, chLoadCount chan *O
 			time.Sleep(100 * time.Millisecond)
 			fmt.Fprintf(f, "%20s %15d %12.2f %12.2f %15.2f %15.2f\n",
 				o.PartNumber, o.Quantity, o.UnitCost, o.UnitPrice, o.UnitCost*float64(o.Quantity), o.UnitPrice*float64(o.Quantity))
-			//add to the counter channel so we know when we can close set the completed JOb Channel outside this func
+			//add to the counter channel so we know when we can close set the completed Job Channel outside this func
 			chLoadCount <- o
 		}(o)
 	}
 
+	//put 'true' on the completed job channel once the loads are all done
 	for {
 		if processed := len(chLoadCount); processed == orderCount {
 			fmt.Println("***** LOAD FINISHED - QUTTING PROGRAM")
